@@ -13,12 +13,28 @@ BASE_DIR = pathlib.Path()
 
 class MainServer(BaseHTTPRequestHandler):
     def do_GET(self):
-        return self.router()
+        pr_url = urllib.parse.urlparse(self.path)
+        if pr_url.path == '/':
+            self.send_html_file('index.html')
+        elif pr_url.path == '/message':
+            self.send_html_file('message.html')
+        else:
+            if pathlib.Path().joinpath(pr_url.path[1:]).exists():
+                self.send_static()
+            else:
+                self.send_html_file('error.html', 404)
 
     def do_POST(self):
         data = self.rfile.read(int(self.headers['Content-Length']))
-        self.save_data_to_json(data)
-        self.send_data_via_socket(data.decode())
+        print(data)
+
+        data_parse = urllib.parse.unquote_plus(data.decode())
+        print(data_parse)
+        data_dict = {key: value for key, value in [
+            el.split('=') for el in data_parse.split('&')]}
+        print(data_dict)
+
+        self.send_data_via_socket(data_dict)
         self.send_response(302)
         self.send_header('Location', '/message')
         self.end_headers()
@@ -30,16 +46,16 @@ class MainServer(BaseHTTPRequestHandler):
         with open(filename, 'rb') as fd:
             self.wfile.write(fd.read())
 
-    def send_static(self, file):
+    def send_static(self):
         self.send_response(200)
         mt = mimetypes.guess_type(self.path)
         if mt:
-            self.send_header('Content-type', mt[0])
+            self.send_header("Content-type", mt[0])
         else:
-            self.send_header('Content-type', 'text/plain')
+            self.send_header("Content-type", 'text/plain')
         self.end_headers()
-        with open(file, 'rb') as fd:
-            self.wfile.write(fd.read())
+        with open(f'.{self.path}', 'rb') as file:
+            self.wfile.write(file.read())
 
     def router(self):
         pr_url = urllib.parse.urlparse(self.path)
@@ -56,20 +72,19 @@ class MainServer(BaseHTTPRequestHandler):
                 else:
                     self.send_html_file('error.html', 404)
 
-    def send_data_via_socket(self, message):
-        host = socket.gethostname()
-        port = 5000
+    @staticmethod
+    def send_data_via_socket(data_dict):
+        udp_ip = "127.0.0.1"
+        udp_port = 5000
 
-        client_socket = socket.socket()
-        client_socket.connect((host, port))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        message = json.dumps(data_dict).encode('utf-8')
+        print(f'send -> {message}')
+        sock.sendto(message, (udp_ip, udp_port))
+        sock.close()
 
-        while message.strip():
-            client_socket.send(message.encode())
-            data = client_socket.recv(1024).decode()
-
-        client_socket.close()
-
-    def save_data_to_json(self, data):
+    @staticmethod
+    def save_data_to_json(data):
         data_parse = urllib.parse.unquote_plus(data.decode())
         data_dict = {key: value for key, value in [
             el.split('=') for el in data_parse.split('&')]}
@@ -88,22 +103,28 @@ class MainServer(BaseHTTPRequestHandler):
 
 
 def server_socket():
-    print("Socket started listening")
-    host = socket.gethostname()
-    port = 5000
+    print("socket start listening")
+    udp_ip = "127.0.0.1"
+    udp_port = 5000
 
-    server_socket = socket.socket()
-    server_socket.bind((host, port))
-    server_socket.listen(2)
-    conn, address = server_socket.accept()
-    print(f'Connection from {address}')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((udp_ip, udp_port))
     while True:
-        data = conn.recv(100).decode()
+        data, _ = sock.recvfrom(1024)
+        data_dict = json.loads(data.decode('utf-8'))
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        new_data_dict = {timestamp: {
+            'username': data_dict['username'], 'message': data_dict['message']}}
+        try:
+            with open('storage/data.json', 'r') as json_file:
+                all_messages = json.load(json_file)
+        except FileNotFoundError:
+            all_messages = {}
 
-        if not data:
-            break
-        # print(f'received message: {data}')
-    conn.close()
+        all_messages.update(new_data_dict)
+
+        with open('storage/data.json', 'w') as json_file:
+            json.dump(all_messages, json_file, indent=4)
 
 
 def run(server_class=HTTPServer, handler_class=MainServer):
